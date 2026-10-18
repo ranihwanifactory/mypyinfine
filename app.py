@@ -1,5 +1,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
+import json
+import os
 
 # 페이지 설정
 st.set_page_config(
@@ -9,17 +11,36 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태로 사용자 닉네임 및 로그인 관리
+# 로컬 JSON 파일 경로
+SCORE_FILE = "scores.json"
+
+def load_scores():
+    if os.path.exists(SCORE_FILE):
+        try:
+            with open(SCORE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_scores_to_file(scores_data):
+    try:
+        with open(SCORE_FILE, "w", encoding="utf-8") as f:
+            json.dump(scores_data, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print("파일 저장 오류:", e)
+
+# Streamlit 세션 상태 관리
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
     st.session_state.user_name = "게스트"
     st.session_state.user_uid = "guest_user"
 
-# 상단에 파이썬 네이티브 닉네임 등록 영역 배치
+# 상단 닉네임 등록 및 관리 UI
 with st.container():
     col1, col2, col3 = st.columns([2, 6, 2])
     with col2:
-        st.markdown("<h3 style='text-align: center; color: white;'>🪜 무한의 계단 & 실시간 랭킹</h3>", unsafe_allow_html=True)
+        st.markdown("<h3 style='text-align: center; color: white;'>🪜 무한의 계단 & 로컬 랭킹</h3>", unsafe_allow_html=True)
         
         if not st.session_state.logged_in:
             with st.form("nickname_form"):
@@ -29,14 +50,37 @@ with st.container():
                     clean_name = nickname.strip()
                     st.session_state.logged_in = True
                     st.session_state.user_name = clean_name
-                    # 닉네임을 기반으로 안전한 UID 생성 (특수문자 제거)
-                    st.session_state.user_uid = "user_" + ''.join(c for c in clean_name if c.isalnum())
+                    st.session_state.user_uid = "user_" + ''.join(c for c in clean_name if c.isalnum() or c in '_-')
                     st.rerun()
         else:
-            st.success(f"플레이어: **{st.session_state.user_name}**님 (게임 기록이 실시간 랭킹에 자동 반영됩니다)")
+            st.success(f"플레이어: **{st.session_state.user_name}**님 (기록이 로컬 파일에 자동 저장됩니다)")
             if st.button("닉네임 변경 / 로그아웃"):
                 st.session_state.logged_in = False
                 st.rerun()
+
+# Streamlit 요청 처리 (자바스크립트 측에서 점수 저장 요청이 올 때 처리)
+query_params = st.query_params
+if "action" in query_params and query_params["action"] == "save_score":
+    uid = query_params.get("uid", "")
+    name = query_params.get("name", "")
+    new_score = int(query_params.get("score", 0))
+    
+    if uid and name:
+        all_scores = load_scores()
+        current_high = all_scores.get(uid, {}).get("score", 0)
+        if new_score > current_high:
+            all_scores[uid] = {"name": name, "score": new_score}
+            save_scores_to_file(all_scores)
+
+# 최신 랭킹 목록 불러오기
+all_scores_dict = load_scores()
+ranking_list = sorted(all_scores_dict.values(), key=lambda x: x["score"], reverse=True)[:5]
+ranking_json_str = json.dumps(ranking_list, ensure_ascii=False)
+
+# 현재 사용자의 기존 최고 기록 불러오기
+current_user_highscore = 0
+if st.session_state.logged_in:
+    current_user_highscore = all_scores_dict.get(st.session_state.user_uid, {}).get("score", 0)
 
 # 모바일 UI 스타일링: Streamlit 여백 제거 및 풀스크린 설정
 st.markdown("""
@@ -59,7 +103,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 파이썬 변수를 안전하게 JS 변수로 치환하기 위한 값 준비
 is_logged_in_val = "true" if st.session_state.logged_in else "false"
 user_uid_val = st.session_state.user_uid
 user_name_val = st.session_state.user_name
@@ -70,57 +113,29 @@ game_html = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>무한의 계단 - 랭킹</title>
+    <title>무한의 계단 - 로컬 랭킹</title>
     
-    <!-- Firebase SDK 로드 (Database 전용) -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
-
-        const firebaseConfig = {
-            apiKey: "AIzaSyBojibEddXnq5MvQPz0TRNiaF-8ZO2r0yA",
-            authDomain: "kidscience-e4a24.firebaseapp.com",
-            databaseURL: "https://kidscience-e4a24-default-rtdb.firebaseio.com",
-            projectId: "kidscience-e4a24",
-            storageBucket: "kidscience-e4a24.firebasestorage.app",
-            messagingSenderId: "982051065836",
-            appId: "1:982051065836:web:563829aece0746ac11fac9",
-            measurementId: "G-G5B44WYEMG"
-        };
-
-        const app = initializeApp(firebaseConfig);
-        const db = getDatabase(app);
-
-        window.firebaseDB = db;
+    <script>
         window.currentUser = {
             isLoggedIn: __IS_LOGGED_IN__,
             uid: "__USER_UID__",
             displayName: "__USER_NAME__"
         };
+        window.highScore = __HIGH_SCORE__;
+        window.rankingList = __RANKING_LIST__;
 
-        window.ref = ref;
-        window.set = set;
-        window.get = get;
-        window.child = child;
-        window.query = query;
-        window.orderByChild = orderByChild;
-        window.limitToLast = limitToLast;
-
-        // 접속 시 기존 사용자 최고기록 및 랭킹 조회
-        async function initUserData() {
-            if (window.currentUser.isLoggedIn && window.currentUser.uid) {
-                try {
-                    const dbRef = window.ref(window.firebaseDB);
-                    const snapshot = await window.get(window.child(dbRef, `scores/${window.currentUser.uid}`));
-                    if (snapshot.exists()) {
-                        highScore = snapshot.val().score || 0;
-                    }
-                } catch (e) { console.error(e); }
+        function saveScoreToLocalFile(newScore) {
+            if (!window.currentUser.isLoggedIn) return;
+            if (newScore > window.highScore) {
+                window.highScore = newScore;
             }
-            fetchRankings();
+            const url = new URL(window.parent.location.href);
+            url.searchParams.set('action', 'save_score');
+            url.searchParams.set('uid', window.currentUser.uid);
+            url.searchParams.set('name', window.currentUser.displayName);
+            url.searchParams.set('score', window.highScore);
+            window.parent.history.replaceState({}, '', url);
         }
-
-        initUserData();
     </script>
 
     <style>
@@ -230,10 +245,8 @@ game_html = """
         window.addEventListener('resize', resizeCanvas);
 
         let score = 0;
-        let highScore = 0;
         let gameState = 'START'; 
         let currentTheme = 'jungle'; 
-        let rankingList = [];
 
         let energy = 100;
         let maxEnergy = 100;
@@ -250,34 +263,6 @@ game_html = """
         const STAIR_RISER_HEIGHT = 10;
         const STAIR_STEP_X = 60;
         const STAIR_STEP_Y = 50;
-
-        async function saveScoreToDB(newScore) {
-            if (!window.currentUser.isLoggedIn) return;
-            if (newScore > highScore) highScore = newScore;
-
-            try {
-                await window.set(window.ref(window.firebaseDB, 'scores/' + window.currentUser.uid), {
-                    name: window.currentUser.displayName,
-                    score: highScore
-                });
-                fetchRankings();
-            } catch (e) { console.error(e); }
-        }
-
-        async function fetchRankings() {
-            try {
-                const dbRef = window.ref(window.firebaseDB, 'scores');
-                const topQuery = window.query(dbRef, window.orderByChild('score'), window.limitToLast(5));
-                const snapshot = await window.get(topQuery);
-                if (snapshot.exists()) {
-                    let list = [];
-                    snapshot.forEach((childSnapshot) => {
-                        list.push(childSnapshot.val());
-                    });
-                    rankingList = list.sort((a, b) => b.score - a.score);
-                }
-            } catch (e) { console.error(e); }
-        }
 
         function initStairs() {
             stairs = [];
@@ -344,9 +329,9 @@ game_html = """
                 score++;
                 energy = Math.min(maxEnergy, energy + 12);
                 
-                if (score > highScore) {
-                    highScore = score;
-                    saveScoreToDB(score);
+                if (score > window.highScore) {
+                    window.highScore = score;
+                    saveScoreToLocalFile(score);
                 }
 
                 character.x = targetStair.x;
@@ -357,7 +342,7 @@ game_html = """
                 targetCameraY = currentIndex * STAIR_STEP_Y - (H * 0.35);
             } else {
                 gameState = 'GAMEOVER';
-                saveScoreToDB(score);
+                saveScoreToLocalFile(score);
             }
         }
 
@@ -507,7 +492,7 @@ game_html = """
                 if (energy <= 0) {
                     energy = 0;
                     gameState = 'GAMEOVER';
-                    saveScoreToDB(score);
+                    saveScoreToLocalFile(score);
                 }
             }
         }
@@ -562,7 +547,7 @@ game_html = """
                 ctx.fillText(score, W / 2, 65);
                 ctx.font = '13px sans-serif';
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-                ctx.fillText('내 최고기록: ' + highScore, W / 2, 85);
+                ctx.fillText('내 최고기록: ' + window.highScore, W / 2, 85);
             }
 
             if (gameState === 'START') {
@@ -572,7 +557,7 @@ game_html = """
                 ctx.fillStyle = '#ffffff';
                 ctx.font = 'bold 24px sans-serif';
                 ctx.textAlign = 'center';
-                ctx.fillText('무한의 계단 & 실시간 랭킹', W / 2, 35);
+                ctx.fillText('무한의 계단 & 로컬 랭킹', W / 2, 35);
 
                 let themes = [
                     { id: 'jungle', name: '🌴 밀림 숲속' },
@@ -608,10 +593,10 @@ game_html = """
                 ctx.font = '13px sans-serif';
                 ctx.fillStyle = '#ffffff';
                 let rankY = rankStartY + 25;
-                if (rankingList.length === 0) {
+                if (window.rankingList.length === 0) {
                     ctx.fillText('등록된 랭킹 데이터가 없습니다.', W / 2, rankY);
                 } else {
-                    rankingList.forEach((r, idx) => {
+                    window.rankingList.forEach((r, idx) => {
                         ctx.fillText((idx + 1) + '위: ' + r.name + ' - ' + r.score + '점', W / 2, rankY + (idx * 22));
                     });
                 }
@@ -631,7 +616,7 @@ game_html = """
 
                 ctx.font = '14px sans-serif';
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-                ctx.fillText('내 최고기록: ' + highScore + '점 (랭킹 자동저장 완료)', W / 2, H / 2 + 32);
+                ctx.fillText('내 최고기록: ' + window.highScore + '점 (로컬 파일 자동저장)', W / 2, H / 2 + 32);
 
                 ctx.fillStyle = '#10ac84';
                 ctx.font = '15px sans-serif';
@@ -655,10 +640,12 @@ game_html = """
 </html>
 """
 
-# .replace()를 사용해 파이썬에서 입력받은 닉네임 정보를 안전하게 JS로 전달
+# .replace()를 사용해 변수를 안전하게 주입
 game_html = game_html.replace("__IS_LOGGED_IN__", is_logged_in_val)
 game_html = game_html.replace("__USER_UID__", user_uid_val)
 game_html = game_html.replace("__USER_NAME__", user_name_val)
+game_html = game_html.replace("__HIGH_SCORE__", str(current_user_highscore))
+game_html = game_html.replace("__RANKING_LIST__", ranking_json_str)
 
 # Streamlit HTML 컴포넌트 출력
 components.html(game_html, height=850)

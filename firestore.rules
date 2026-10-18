@@ -1,0 +1,71 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global helper primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Household Expenses Collection
+    match /expenses/{expenseId} {
+      // Users can only read and list expenses that belong to their own userId
+      allow get: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      // Users can create expenses with valid structure and their own userId
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.amount is number
+        && request.resource.data.storeName is string
+        && request.resource.data.storeName.size() <= 120
+        && request.resource.data.category is string;
+
+      // Users can update their own expenses while keeping immutable fields intact
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId;
+
+      // Users can delete their own expenses
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // User Budget Settings Collection
+    match /user_budgets/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId) && request.resource.data.userId == request.auth.uid;
+    }
+
+    // 기존에 열어두었던 컬렉션 (기존 동작 유지)
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+    match /users_by_email/{emailKey} {
+      allow read, write: if true;
+    }
+    match /rankings/{rankingId} {
+      allow read, write: if true;
+    }
+    match /community_posts/{postId} {
+      allow read, write: if true;
+    }
+
+    // [삭제됨] 맨 아래에 있던 아래 규칙은 모든 컬렉션을 전면 개방해서
+    // 위의 expenses / user_budgets 보호 규칙을 무력화했기 때문에 제거했습니다.
+    // match /{document=**} { allow read, write: if true; }
+  }
+}
