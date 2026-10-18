@@ -30,7 +30,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# f-string 대신 일반 문자열로 변경하여 Python/JS 중괄호 충돌 해결
 game_html = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -42,7 +41,7 @@ game_html = """
     <!-- Firebase SDK 로드 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
@@ -64,7 +63,7 @@ game_html = """
         window.firebaseAuth = auth;
         window.firebaseDB = db;
         window.googleProvider = provider;
-        window.signInWithPopup = signInWithPopup;
+        window.signInWithRedirect = signInWithRedirect;
         window.signOut = signOut;
         window.ref = ref;
         window.set = set;
@@ -73,6 +72,11 @@ game_html = """
         window.query = query;
         window.orderByChild = orderByChild;
         window.limitToLast = limitToLast;
+
+        // 리다이렉트 로그인 결과 처리
+        getRedirectResult(auth).catch((error) => {
+            console.error("로그인 리다이렉트 에러:", error);
+        });
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
@@ -362,7 +366,8 @@ game_html = """
                 let loginBtnY = H / 2 + 115;
                 if (clientX > W / 2 - 110 && clientX < W / 2 + 110 && clientY > loginBtnY && clientY < loginBtnY + 42) {
                     if (!window.currentUser) {
-                        window.signInWithPopup(window.firebaseAuth, window.googleProvider).catch((error) => console.error(error));
+                        // 팝업 대신 리다이렉트 로그인으로 변경하여 iframe 차단 우회
+                        window.signInWithRedirect(window.firebaseAuth, window.googleProvider).catch((error) => console.error(error));
                     } else {
                         window.signOut(window.firebaseAuth);
                     }
@@ -511,7 +516,6 @@ game_html = """
             ctx.save();
             ctx.translate(0, cameraY);
 
-            // 3D 입체 계단 그리기
             stairs.forEach((stair, index) => {
                 let isCurrent = index === currentIndex;
                 let sx = stair.x - STAIR_WIDTH / 2;
