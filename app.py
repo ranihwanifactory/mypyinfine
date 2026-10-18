@@ -9,6 +9,35 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# 세션 상태로 사용자 닉네임 및 로그인 관리
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_name = "게스트"
+    st.session_state.user_uid = "guest_user"
+
+# 상단에 파이썬 네이티브 닉네임 등록 영역 배치
+with st.container():
+    col1, col2, col3 = st.columns([2, 6, 2])
+    with col2:
+        st.markdown("<h3 style='text-align: center; color: white;'>🪜 무한의 계단 & 실시간 랭킹</h3>", unsafe_allow_html=True)
+        
+        if not st.session_state.logged_in:
+            with st.form("nickname_form"):
+                nickname = st.text_input("플레이어 닉네임을 입력하세요", placeholder="예: 홍길동")
+                submitted = st.form_submit_button("게임 시작 및 기록 저장 활성화")
+                if submitted and nickname.strip():
+                    clean_name = nickname.strip()
+                    st.session_state.logged_in = True
+                    st.session_state.user_name = clean_name
+                    # 닉네임을 기반으로 안전한 UID 생성 (특수문자 제거)
+                    st.session_state.user_uid = "user_" + ''.join(c for c in clean_name if c.isalnum())
+                    st.rerun()
+        else:
+            st.success(f"플레이어: **{st.session_state.user_name}**님 (게임 기록이 실시간 랭킹에 자동 반영됩니다)")
+            if st.button("닉네임 변경 / 로그아웃"):
+                st.session_state.logged_in = False
+                st.rerun()
+
 # 모바일 UI 스타일링: Streamlit 여백 제거 및 풀스크린 설정
 st.markdown("""
     <style>
@@ -30,6 +59,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# 파이썬 변수를 안전하게 JS 변수로 치환하기 위한 값 준비
+is_logged_in_val = "true" if st.session_state.logged_in else "false"
+user_uid_val = st.session_state.user_uid
+user_name_val = st.session_state.user_name
+
 game_html = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -38,10 +72,9 @@ game_html = """
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>무한의 계단 - 랭킹</title>
     
-    <!-- Firebase SDK 로드 -->
+    <!-- Firebase SDK 로드 (Database 전용) -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
@@ -56,15 +89,15 @@ game_html = """
         };
 
         const app = initializeApp(firebaseConfig);
-        const auth = getAuth(app);
         const db = getDatabase(app);
-        const provider = new GoogleAuthProvider();
 
-        window.firebaseAuth = auth;
         window.firebaseDB = db;
-        window.googleProvider = provider;
-        window.signInWithPopup = signInWithPopup;
-        window.signOut = signOut;
+        window.currentUser = {
+            isLoggedIn: __IS_LOGGED_IN__,
+            uid: "__USER_UID__",
+            displayName: "__USER_NAME__"
+        };
+
         window.ref = ref;
         window.set = set;
         window.get = get;
@@ -73,15 +106,21 @@ game_html = """
         window.orderByChild = orderByChild;
         window.limitToLast = limitToLast;
 
-        onAuthStateChanged(auth, (user) => {
-            if (user) {
-                window.currentUser = user;
-                if (window.onUserLogin) window.onUserLogin(user);
-            } else {
-                window.currentUser = null;
-                if (window.onUserLogout) window.onUserLogout();
+        // 접속 시 기존 사용자 최고기록 및 랭킹 조회
+        async function initUserData() {
+            if (window.currentUser.isLoggedIn && window.currentUser.uid) {
+                try {
+                    const dbRef = window.ref(window.firebaseDB);
+                    const snapshot = await window.get(window.child(dbRef, `scores/${window.currentUser.uid}`));
+                    if (snapshot.exists()) {
+                        highScore = snapshot.val().score || 0;
+                    }
+                } catch (e) { console.error(e); }
             }
-        });
+            fetchRankings();
+        }
+
+        initUserData();
     </script>
 
     <style>
@@ -212,35 +251,14 @@ game_html = """
         const STAIR_STEP_X = 60;
         const STAIR_STEP_Y = 50;
 
-        window.onUserLogin = (user) => {
-            fetchUserHighScore(user.uid);
-            fetchRankings();
-        };
-        window.onUserLogout = () => {
-            highScore = 0;
-            fetchRankings();
-        };
-
-        async function fetchUserHighScore(uid) {
-            try {
-                const dbRef = window.ref(window.firebaseDB);
-                const snapshot = await window.get(window.child(dbRef, `scores/${uid}`));
-                if (snapshot.exists()) {
-                    highScore = snapshot.val().score || 0;
-                }
-            } catch (e) { console.error(e); }
-        }
-
         async function saveScoreToDB(newScore) {
-            if (!window.currentUser) return;
-            const user = window.currentUser;
+            if (!window.currentUser.isLoggedIn) return;
             if (newScore > highScore) highScore = newScore;
 
             try {
-                await window.set(window.ref(window.firebaseDB, 'scores/' + user.uid), {
-                    name: user.displayName || '익명 플레이어',
-                    score: highScore,
-                    photoURL: user.photoURL || ''
+                await window.set(window.ref(window.firebaseDB, 'scores/' + window.currentUser.uid), {
+                    name: window.currentUser.displayName,
+                    score: highScore
                 });
                 fetchRankings();
             } catch (e) { console.error(e); }
@@ -359,12 +377,6 @@ game_html = """
             let clientY = e.clientY - rect.top;
 
             if (gameState === 'START') {
-                let loginBtnY = H / 2 + 115;
-                if (clientX > W / 2 - 110 && clientX < W / 2 + 110 && clientY > loginBtnY && clientY < loginBtnY + 42) {
-                    // 로그인/로그아웃은 click 이벤트에서 처리 (팝업 차단 방지)
-                    return;
-                }
-
                 let themes = ['jungle', 'city', 'space', 'cyber', 'sky'];
                 let startY = 55;
                 let btnW = W * 0.82;
@@ -381,28 +393,6 @@ game_html = """
                 }
             }
             jump();
-        });
-
-        // 로그인 버튼: 사용자 클릭(click)에서 팝업을 열어야 차단되지 않음
-        canvas.addEventListener('click', (e) => {
-            if (gameState !== 'START') return;
-            let rect = canvas.getBoundingClientRect();
-            let clientX = e.clientX - rect.left;
-            let clientY = e.clientY - rect.top;
-            let loginBtnY = H / 2 + 115;
-            if (clientX > W / 2 - 110 && clientX < W / 2 + 110 && clientY > loginBtnY && clientY < loginBtnY + 42) {
-                if (!window.currentUser) {
-                    window.signInWithPopup(window.firebaseAuth, window.googleProvider)
-                        .catch((error) => {
-                            console.error("로그인 오류:", error.code, error.message);
-                            if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
-                                alert("로그인 오류: " + error.code);
-                            }
-                        });
-                } else {
-                    window.signOut(window.firebaseAuth);
-                }
-            }
         });
 
         window.addEventListener('keydown', (e) => {
@@ -582,7 +572,7 @@ game_html = """
                 ctx.fillStyle = '#ffffff';
                 ctx.font = 'bold 24px sans-serif';
                 ctx.textAlign = 'center';
-                ctx.fillText('무한의 계단 & 랭킹', W / 2, 35);
+                ctx.fillText('무한의 계단 & 실시간 랭킹', W / 2, 35);
 
                 let themes = [
                     { id: 'jungle', name: '🌴 밀림 숲속' },
@@ -610,28 +600,19 @@ game_html = """
                     ctx.fillText(themes[i].name, W / 2, bY + 23);
                 }
 
-                let loginBtnY = H / 2 + 115;
-                ctx.fillStyle = window.currentUser ? '#ea4335' : '#4285f4';
-                ctx.beginPath();
-                ctx.roundRect(W / 2 - 110, loginBtnY, 220, 42, 8);
-                ctx.fill();
+                let rankStartY = startY + (themes.length * 42) + 20;
+                ctx.fillStyle = '#ff9f43';
+                ctx.font = 'bold 16px sans-serif';
+                ctx.fillText('🏆 실시간 TOP 랭킹', W / 2, rankStartY);
 
+                ctx.font = '13px sans-serif';
                 ctx.fillStyle = '#ffffff';
-                ctx.font = 'bold 14px sans-serif';
-                let loginText = window.currentUser ? '로그아웃 (' + (window.currentUser.displayName || '사용자').split(' ')[0] + ')' : '구글 계정으로 로그인';
-                ctx.fillText(loginText, W / 2, loginBtnY + 26);
-
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-                ctx.font = 'bold 14px sans-serif';
-                ctx.fillText('🏆 실시간 TOP 랭킹', W / 2, loginBtnY + 60);
-
-                ctx.font = '12px sans-serif';
-                let rankY = loginBtnY + 80;
+                let rankY = rankStartY + 25;
                 if (rankingList.length === 0) {
                     ctx.fillText('등록된 랭킹 데이터가 없습니다.', W / 2, rankY);
                 } else {
                     rankingList.forEach((r, idx) => {
-                        ctx.fillText((idx + 1) + '위: ' + r.name + ' - ' + r.score + '점', W / 2, rankY + (idx * 20));
+                        ctx.fillText((idx + 1) + '위: ' + r.name + ' - ' + r.score + '점', W / 2, rankY + (idx * 22));
                     });
                 }
 
@@ -650,7 +631,7 @@ game_html = """
 
                 ctx.font = '14px sans-serif';
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-                ctx.fillText('내 최고기록: ' + highScore + '점 (DB 자동저장)', W / 2, H / 2 + 32);
+                ctx.fillText('내 최고기록: ' + highScore + '점 (랭킹 자동저장 완료)', W / 2, H / 2 + 32);
 
                 ctx.fillStyle = '#10ac84';
                 ctx.font = '15px sans-serif';
@@ -673,6 +654,11 @@ game_html = """
 </body>
 </html>
 """
+
+# .replace()를 사용해 파이썬에서 입력받은 닉네임 정보를 안전하게 JS로 전달
+game_html = game_html.replace("__IS_LOGGED_IN__", is_logged_in_val)
+game_html = game_html.replace("__USER_UID__", user_uid_val)
+game_html = game_html.replace("__USER_NAME__", user_name_val)
 
 # Streamlit HTML 컴포넌트 출력
 components.html(game_html, height=850)
