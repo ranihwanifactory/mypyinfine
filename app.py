@@ -9,33 +9,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# 세션 상태로 로그인 정보 관리
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-    st.session_state.user_name = "게스트"
-    st.session_state.user_uid = "guest_user"
-
-# 상단에 파이썬 네이티브 로그인 영역 배치 (iframe 차단 우회)
-with st.container():
-    col1, col2, col3 = st.columns([2, 6, 2])
-    with col2:
-        st.markdown("<h3 style='text-align: center; color: white;'>🪜 무한의 계단 & 실시간 랭킹</h3>", unsafe_allow_html=True)
-        
-        if not st.session_state.logged_in:
-            with st.form("login_form"):
-                nickname = st.text_input("플레이어 닉네임을 입력하세요", placeholder="홍길동")
-                submitted = st.form_submit_button("게임 시작 및 랭킹 등록 활성화")
-                if submitted and nickname.strip():
-                    st.session_state.logged_in = True
-                    st.session_state.user_name = nickname.strip()
-                    st.session_state.user_uid = "user_" + str(hash(nickname))
-                    st.rerun()
-        else:
-            st.success(f"환영합니다, **{st.session_state.user_name}**님! (기록이 자동으로 랭킹에 반영됩니다)")
-            if st.button("로그아웃 / 닉네임 변경"):
-                st.session_state.logged_in = False
-                st.rerun()
-
 # 모바일 UI 스타일링: Streamlit 여백 제거 및 풀스크린 설정
 st.markdown("""
     <style>
@@ -46,15 +19,17 @@ st.markdown("""
             padding: 0rem !important;
             max-width: 100% !important;
         }
+        iframe {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw !important;
+            height: 100vh !important;
+            border: none;
+        }
     </style>
 """, unsafe_allow_html=True)
 
-# 파이썬 변수를 안전하게 JS 변수로 치환하기 위한 값 준비
-is_logged_in_val = "true" if st.session_state.logged_in else "false"
-user_uid_val = st.session_state.user_uid
-user_name_val = st.session_state.user_name
-
-# HTML 및 게임 로직 코드
 game_html = """
 <!DOCTYPE html>
 <html lang="ko">
@@ -66,6 +41,7 @@ game_html = """
     <!-- Firebase SDK 로드 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
@@ -80,15 +56,15 @@ game_html = """
         };
 
         const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
         const db = getDatabase(app);
+        const provider = new GoogleAuthProvider();
 
+        window.firebaseAuth = auth;
         window.firebaseDB = db;
-        window.currentUser = {
-            isLoggedIn: __IS_LOGGED_IN__,
-            uid: "__USER_UID__",
-            displayName: "__USER_NAME__"
-        };
-
+        window.googleProvider = provider;
+        window.signInWithPopup = signInWithPopup;
+        window.signOut = signOut;
         window.ref = ref;
         window.set = set;
         window.get = get;
@@ -96,8 +72,16 @@ game_html = """
         window.query = query;
         window.orderByChild = orderByChild;
         window.limitToLast = limitToLast;
-        
-        fetchRankings();
+
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                window.currentUser = user;
+                if (window.onUserLogin) window.onUserLogin(user);
+            } else {
+                window.currentUser = null;
+                if (window.onUserLogout) window.onUserLogout();
+            }
+        });
     </script>
 
     <style>
@@ -228,14 +212,35 @@ game_html = """
         const STAIR_STEP_X = 60;
         const STAIR_STEP_Y = 50;
 
+        window.onUserLogin = (user) => {
+            fetchUserHighScore(user.uid);
+            fetchRankings();
+        };
+        window.onUserLogout = () => {
+            highScore = 0;
+            fetchRankings();
+        };
+
+        async function fetchUserHighScore(uid) {
+            try {
+                const dbRef = window.ref(window.firebaseDB);
+                const snapshot = await window.get(window.child(dbRef, `scores/${uid}`));
+                if (snapshot.exists()) {
+                    highScore = snapshot.val().score || 0;
+                }
+            } catch (e) { console.error(e); }
+        }
+
         async function saveScoreToDB(newScore) {
-            if (!window.currentUser.isLoggedIn) return;
+            if (!window.currentUser) return;
+            const user = window.currentUser;
             if (newScore > highScore) highScore = newScore;
 
             try {
-                await window.set(window.ref(window.firebaseDB, 'scores/' + window.currentUser.uid), {
-                    name: window.currentUser.displayName,
-                    score: highScore
+                await window.set(window.ref(window.firebaseDB, 'scores/' + user.uid), {
+                    name: user.displayName || '익명 플레이어',
+                    score: highScore,
+                    photoURL: user.photoURL || ''
                 });
                 fetchRankings();
             } catch (e) { console.error(e); }
@@ -354,8 +359,14 @@ game_html = """
             let clientY = e.clientY - rect.top;
 
             if (gameState === 'START') {
+                let loginBtnY = H / 2 + 115;
+                if (clientX > W / 2 - 110 && clientX < W / 2 + 110 && clientY > loginBtnY && clientY < loginBtnY + 42) {
+                    // 로그인/로그아웃은 click 이벤트에서 처리 (팝업 차단 방지)
+                    return;
+                }
+
                 let themes = ['jungle', 'city', 'space', 'cyber', 'sky'];
-                let startY = 80;
+                let startY = 55;
                 let btnW = W * 0.82;
                 let btnH = 36;
                 
@@ -370,6 +381,28 @@ game_html = """
                 }
             }
             jump();
+        });
+
+        // 로그인 버튼: 사용자 클릭(click)에서 팝업을 열어야 차단되지 않음
+        canvas.addEventListener('click', (e) => {
+            if (gameState !== 'START') return;
+            let rect = canvas.getBoundingClientRect();
+            let clientX = e.clientX - rect.left;
+            let clientY = e.clientY - rect.top;
+            let loginBtnY = H / 2 + 115;
+            if (clientX > W / 2 - 110 && clientX < W / 2 + 110 && clientY > loginBtnY && clientY < loginBtnY + 42) {
+                if (!window.currentUser) {
+                    window.signInWithPopup(window.firebaseAuth, window.googleProvider)
+                        .catch((error) => {
+                            console.error("로그인 오류:", error.code, error.message);
+                            if (error.code !== 'auth/popup-closed-by-user' && error.code !== 'auth/cancelled-popup-request') {
+                                alert("로그인 오류: " + error.code);
+                            }
+                        });
+                } else {
+                    window.signOut(window.firebaseAuth);
+                }
+            }
         });
 
         window.addEventListener('keydown', (e) => {
@@ -539,7 +572,7 @@ game_html = """
                 ctx.fillText(score, W / 2, 65);
                 ctx.font = '13px sans-serif';
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
-                ctx.fillText('내 점수: ' + score, W / 2, 85);
+                ctx.fillText('내 최고기록: ' + highScore, W / 2, 85);
             }
 
             if (gameState === 'START') {
@@ -547,9 +580,9 @@ game_html = """
                 ctx.fillRect(0, 0, W, H);
 
                 ctx.fillStyle = '#ffffff';
-                ctx.font = 'bold 22px sans-serif';
+                ctx.font = 'bold 24px sans-serif';
                 ctx.textAlign = 'center';
-                ctx.fillText('테마를 선택하세요', W / 2, 50);
+                ctx.fillText('무한의 계단 & 랭킹', W / 2, 35);
 
                 let themes = [
                     { id: 'jungle', name: '🌴 밀림 숲속' },
@@ -558,7 +591,7 @@ game_html = """
                     { id: 'cyber', name: '⚡ 사이버펑크' },
                     { id: 'sky', name: '☁ 구름 하늘' }
                 ];
-                let startY = 80;
+                let startY = 55;
                 let btnW = W * 0.82;
                 let btnH = 36;
 
@@ -577,19 +610,28 @@ game_html = """
                     ctx.fillText(themes[i].name, W / 2, bY + 23);
                 }
 
-                let rankStartY = startY + (themes.length * 42) + 20;
-                ctx.fillStyle = '#ff9f43';
-                ctx.font = 'bold 16px sans-serif';
-                ctx.fillText('🏆 실시간 TOP 랭킹', W / 2, rankStartY);
+                let loginBtnY = H / 2 + 115;
+                ctx.fillStyle = window.currentUser ? '#ea4335' : '#4285f4';
+                ctx.beginPath();
+                ctx.roundRect(W / 2 - 110, loginBtnY, 220, 42, 8);
+                ctx.fill();
 
-                ctx.font = '13px sans-serif';
                 ctx.fillStyle = '#ffffff';
-                let rankY = rankStartY + 25;
+                ctx.font = 'bold 14px sans-serif';
+                let loginText = window.currentUser ? '로그아웃 (' + (window.currentUser.displayName || '사용자').split(' ')[0] + ')' : '구글 계정으로 로그인';
+                ctx.fillText(loginText, W / 2, loginBtnY + 26);
+
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+                ctx.font = 'bold 14px sans-serif';
+                ctx.fillText('🏆 실시간 TOP 랭킹', W / 2, loginBtnY + 60);
+
+                ctx.font = '12px sans-serif';
+                let rankY = loginBtnY + 80;
                 if (rankingList.length === 0) {
                     ctx.fillText('등록된 랭킹 데이터가 없습니다.', W / 2, rankY);
                 } else {
                     rankingList.forEach((r, idx) => {
-                        ctx.fillText((idx + 1) + '위: ' + r.name + ' - ' + r.score + '점', W / 2, rankY + (idx * 22));
+                        ctx.fillText((idx + 1) + '위: ' + r.name + ' - ' + r.score + '점', W / 2, rankY + (idx * 20));
                     });
                 }
 
@@ -608,7 +650,7 @@ game_html = """
 
                 ctx.font = '14px sans-serif';
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.7)';
-                ctx.fillText('랭킹 자동저장 완료!', W / 2, H / 2 + 32);
+                ctx.fillText('내 최고기록: ' + highScore + '점 (DB 자동저장)', W / 2, H / 2 + 32);
 
                 ctx.fillStyle = '#10ac84';
                 ctx.font = '15px sans-serif';
@@ -631,11 +673,6 @@ game_html = """
 </body>
 </html>
 """
-
-# .replace()를 사용해 자바스크립트 변수를 안전하게 주입
-game_html = game_html.replace("__IS_LOGGED_IN__", is_logged_in_val)
-game_html = game_html.replace("__USER_UID__", user_uid_val)
-game_html = game_html.replace("__USER_NAME__", user_name_val)
 
 # Streamlit HTML 컴포넌트 출력
 components.html(game_html, height=850)
