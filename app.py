@@ -41,7 +41,7 @@ game_html = """
     <!-- Firebase SDK 로드 -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getAuth, GoogleAuthProvider, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
         import { getDatabase, ref, set, get, child, query, orderByChild, limitToLast } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
         const firebaseConfig = {
@@ -63,7 +63,7 @@ game_html = """
         window.firebaseAuth = auth;
         window.firebaseDB = db;
         window.googleProvider = provider;
-        window.signInWithRedirect = signInWithRedirect;
+        window.signInWithPopup = signInWithPopup; 
         window.signOut = signOut;
         window.ref = ref;
         window.set = set;
