@@ -21,7 +21,6 @@ with st.container():
     with col2:
         st.markdown("<h3 style='text-align: center; color: white;'>🪜 무한의 계단 & 실시간 랭킹</h3>", unsafe_allow_html=True)
         
-        # 간단한 로그인 시뮬레이션 및 닉네임 입력 (Streamlit 네이티브 UI)
         if not st.session_state.logged_in:
             with st.form("login_form"):
                 nickname = st.text_input("플레이어 닉네임을 입력하세요", placeholder="홍길동")
@@ -50,12 +49,13 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 게임 HTML 코드 (파이썬에서 로그인된 닉네임/UID를 주입)
-user_name_js = st.session_state.user_name
-user_uid_js = st.session_state.user_uid
-is_logged_in_js = "true" if st.session_state.logged_in else "false"
+# 파이썬 변수를 안전하게 JS 변수로 치환하기 위한 값 준비
+is_logged_in_val = "true" if st.session_state.logged_in else "false"
+user_uid_val = st.session_state.user_uid
+user_name_val = st.session_state.user_name
 
-game_html = f"""
+# f-string 대신 일반 문자열을 쓰고 .replace()로 안전하게 주입하여 SyntaxError 방지
+game_html = """
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -84,9 +84,9 @@ game_html = f"""
 
         window.firebaseDB = db;
         window.currentUser = {
-            isLoggedIn: {is_logged_in_js},
-            uid: "{user_uid_js}",
-            displayName: "{user_name_js}"
+            isLoggedIn: __IS_LOGGED_IN__,
+            uid: "__USER_UID__",
+            displayName: "__USER_NAME__"
         };
 
         window.ref = ref;
@@ -631,6 +631,11 @@ game_html = f"""
 </body>
 </html>
 """
+
+# .replace()를 사용해 자바스크립트 변수를 안전하게 주입
+game_html = game_html.replace("__IS_LOGGED_IN__", is_logged_in_val)
+game_html = game_html.replace("__USER_UID__", user_uid_val)
+game_html = game_html.replace("__USER_NAME__", user_name_val)
 
 # Streamlit HTML 컴포넌트 출력
 components.html(game_html, height=850)
