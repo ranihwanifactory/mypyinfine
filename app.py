@@ -54,7 +54,7 @@ is_logged_in_val = "true" if st.session_state.logged_in else "false"
 user_uid_val = st.session_state.user_uid
 user_name_val = st.session_state.user_name
 
-# f-string 대신 일반 문자열을 쓰고 .replace()로 안전하게 주입하여 SyntaxError 방지
+# HTML 및 게임 로직 코드
 game_html = """
 <!DOCTYPE html>
 <html lang="ko">
